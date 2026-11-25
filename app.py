@@ -1,11 +1,4 @@
-"""داشبورد مالی — نسخهٔ Streamlit توسعه‌یافته بر پایهٔ کد قبلی.
 
-قابلیت‌های تازه:
-  • صفحهٔ «جفت ارز مصنوعی» با نمودار نسبت و مقایسهٔ نرمال‌شده
-  • اولویت‌بندی سربرگ‌ها در تنظیمات
-  • تنظیمات در پنل سمت راست (سایدبار)
-  • حالت روز/شب خودکار بر اساس ساعت ورودی کاربر (قابل خاموش/روشن)
-"""
 from __future__ import annotations
 
 import base64
@@ -1119,36 +1112,62 @@ def page_monthly(data, dark: bool) -> None:
     render_table(pd.DataFrame(rows))
 
 
-def render_sidebar_settings(data) -> None:
+def render_sidebar_settings(data, prefix: str = "sidebar") -> None:
+    """پنل تنظیمات مشترک سایدبار و صفحهٔ تنظیمات.
+
+    پارامتر ``prefix`` برای جلوگیری از تداخل کلید ویجت‌ها است؛ چون این تابع
+    هم در سایدبار و هم در صفحهٔ «⚙️ تنظیمات» رندر می‌شود.
+    """
     settings = data["settings"]
     with st.expander("🎨 اولویت سربرگ‌ها", expanded=False):
         order = list(settings.get("nav_order") or DEFAULT_NAV_ORDER)
         for index, key in enumerate(order):
             cols = st.columns([4, 1, 1])
             cols[0].markdown(f"**{index + 1}.** {NAV_EMOJI.get(key, '')} {NAV_LABELS.get(key, key)}")
-            if cols[1].button("▲", key=f"nav_up_{key}", disabled=index == 0):
+            if cols[1].button("▲", key=f"{prefix}_nav_up_{key}", disabled=index == 0):
                 order[index - 1], order[index] = order[index], order[index - 1]
                 settings["nav_order"] = order
                 save_all(data)
                 st.rerun()
-            if cols[2].button("▼", key=f"nav_down_{key}", disabled=index == len(order) - 1):
+            if cols[2].button("▼", key=f"{prefix}_nav_down_{key}", disabled=index == len(order) - 1):
                 order[index + 1], order[index] = order[index], order[index + 1]
                 settings["nav_order"] = order
                 save_all(data)
                 st.rerun()
+
     with st.expander("🌗 حالت روز / شب", expanded=False):
-        auto = st.checkbox("تغییر خودکار بر اساس ساعت", value=bool(settings.get("auto_theme", True)))
+        auto = st.checkbox(
+            "تغییر خودکار بر اساس ساعت",
+            value=bool(settings.get("auto_theme", True)),
+            key=f"{prefix}_auto_theme",
+        )
         c1, c2 = st.columns(2)
-        day_start = c1.text_input("شروع روز", value=settings.get("day_start", "07:00"))
-        night_start = c2.text_input("شروع شب", value=settings.get("night_start", "19:00"))
-        if st.button("💾 ذخیرهٔ زمان‌بندی", key="save_theme_schedule", use_container_width=True):
+        day_start = c1.text_input(
+            "شروع روز",
+            value=settings.get("day_start", "07:00"),
+            key=f"{prefix}_day_start",
+        )
+        night_start = c2.text_input(
+            "شروع شب",
+            value=settings.get("night_start", "19:00"),
+            key=f"{prefix}_night_start",
+        )
+        if st.button(
+            "💾 ذخیرهٔ زمان‌بندی",
+            key=f"{prefix}_save_theme_schedule",
+            use_container_width=True,
+        ):
             settings["auto_theme"] = auto
             settings["day_start"] = day_start
             settings["night_start"] = night_start
             save_all(data)
             st.rerun()
         if not settings.get("auto_theme", True):
-            manual_dark = st.checkbox("حالت شب دستی", value=bool(settings.get("dark_mode", False)))
+            manual_dark = st.checkbox(
+                "حالت شب دستی",
+                value=bool(settings.get("dark_mode", False)),
+                key=f"{prefix}_manual_dark",
+            )
             if manual_dark != bool(settings.get("dark_mode", False)):
                 settings["dark_mode"] = manual_dark
                 save_all(data)
@@ -1158,7 +1177,8 @@ def render_sidebar_settings(data) -> None:
 
 def page_settings(data) -> None:
     st.header("⚙️ تنظیمات")
-    render_sidebar_settings(data)
+    # از prefix متفاوت استفاده می‌کنیم تا با نسخهٔ سایدبار تداخل نکند
+    render_sidebar_settings(data, prefix="settings_page")
     with st.expander("💾 وضعیت ذخیره‌سازی", expanded=True):
         local_ok = os.path.exists(DATA_FILE)
         st.caption(f"{'✅' if local_ok else '❌'} فایل محلی data.json")
@@ -1238,6 +1258,7 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.divider()
+    # prefix پیش‌فرض «sidebar» است و با نسخهٔ صفحهٔ تنظیمات تداخل ندارد
     render_sidebar_settings(data)
     st.divider()
     if st.button("💾 ذخیره فوری", use_container_width=True):
