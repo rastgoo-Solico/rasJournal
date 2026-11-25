@@ -913,7 +913,7 @@ def _price_on(history, date_str):
 
 
 def build_pair_series(data, left_id, right_id):
-    """ساخت DataFrame با نسبت و شاخص‌های نرمال‌شده برای دو ابزار."""
+    """ساخت DataFrame با نسبت، شاخص‌های نرمال‌شده و شاخص دلار مرجع."""
     left = _price_history(data, left_id)
     right = _price_history(data, right_id)
     dates = sorted({date for date, _ in left} | {date for date, _ in right})
@@ -936,6 +936,25 @@ def build_pair_series(data, left_id, right_id):
     frame["left_index"] = frame["left"] / base["left"] * 100
     frame["right_index"] = frame["right"] / base["right"] * 100
     frame["ratio_index"] = frame["ratio"] / base["ratio"] * 100
+
+    # 🆕 شاخص دلار به عنوان خط مرجع (پایه = ۱۰۰ در اولین نرخ موجود)
+    usd_history = _price_history(data, "usd")
+    if usd_history:
+        usd_base = usd_history[0][1]
+        if usd_base > 0:
+            usd_values = []
+            for date in frame["date"]:
+                val = _price_on(usd_history, date)
+                usd_values.append(val if val is not None else usd_history[0][1])
+            frame["usd_rate"] = usd_values
+            frame["usd_index"] = frame["usd_rate"] / usd_base * 100
+        else:
+            frame["usd_rate"] = None
+            frame["usd_index"] = None
+    else:
+        frame["usd_rate"] = None
+        frame["usd_index"] = None
+
     frame["label"] = frame["date"].map(lambda v: iso_to_jalali(v + "T00:00:00", with_time=False))
     return frame
 
@@ -943,7 +962,7 @@ def build_pair_series(data, left_id, right_id):
 def render_synthetic_page(data, dark):
     st.header("🔀 جفت ارز مصنوعی")
     st.caption("نسبت قیمت دو ابزار دارای تاریخچه؛ برای نمونه «صندوق طلا / دلار» یا «وبملت / صندوق طلا». "
-               "قیمت‌ها برای مقایسه به ریال تبدیل می‌شوند.")
+               "قیمت‌ها برای مقایسه به ریال تبدیل می‌شوند. خط شاخص دلار به‌عنوان مرجع در نمودار مقایسه‌ای نمایش داده می‌شود.")
     instruments = get_synthetic_instruments(data)
     if len(instruments) < 2:
         st.info("برای ساخت جفت، دست‌کم دو ابزار دارای داده لازم است. "
@@ -993,19 +1012,29 @@ def render_synthetic_page(data, dark):
     right_label = labels.get(pair.get("right"), pair.get("right", ""))
 
     frame = build_pair_series(data, pair.get("left"), pair.get("right"))
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     if frame.empty:
         c1.metric("نسبت فعلی", "—")
-        c2.metric("تغییر از ابتدا", "—")
-        c3.metric("تعداد نقاط", "0")
+        c2.metric("تغییر نسبت", "—")
+        c3.metric("تغییر شاخص دلار", "—")
+        c4.metric("تعداد نقاط", "0")
         st.warning("داده‌ای برای این جفت موجود نیست؛ ممکن است منبع حذف شده باشد.")
     else:
         last = frame.iloc[-1]
+        has_usd = frame["usd_index"].notna().any()
         c1.metric("نسبت فعلی", f"{last['ratio']:,.5f}",
                   help=f"{left_label} ÷ {right_label}")
         c2.metric("تغییر نسبت از ابتدا", f"{last['ratio_index'] - 100:+.2f}٪")
-        c3.metric("تعداد نقاط", f"{len(frame):,}")
+        if has_usd:
+            last_usd_idx = frame.loc[frame["usd_index"].notna(), "usd_index"].iloc[-1]
+            c3.metric("💵 تغییر شاخص دلار", f"{last_usd_idx - 100:+.2f}٪",
+                      help="رشد یا افت نرخ دلار از ابتدای بازه (مرجع)")
+        else:
+            c3.metric("💵 تغییر شاخص دلار", "—",
+                      help="نرخ دلار ثبت نشده است")
+        c4.metric("تعداد نقاط", f"{len(frame):,}")
 
+        # ---------- نمودار نسبت ----------
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=frame["label"], y=frame["ratio"], mode="lines+markers",
@@ -1015,19 +1044,59 @@ def render_synthetic_page(data, dark):
         _apply_chart_style(fig, dark, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
+        # ---------- نمودار مقایسه‌ای + شاخص دلار ----------
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
             x=frame["label"], y=frame["left_index"], mode="lines+markers",
-            name=left_label, line={"color": "#3b82f6", "width": 3}))
+            name=left_label, line={"color": "#3b82f6", "width": 3},
+            marker={"size": 6}))
         fig2.add_trace(go.Scatter(
             x=frame["label"], y=frame["right_index"], mode="lines+markers",
-            name=right_label, line={"color": "#10b981", "width": 3}))
+            name=right_label, line={"color": "#10b981", "width": 3},
+            marker={"size": 6}))
+        if has_usd:
+            fig2.add_trace(go.Scatter(
+                x=frame["label"], y=frame["usd_index"], mode="lines+markers",
+                name="💵 شاخص دلار (مرجع)",
+                line={"color": "#f59e0b", "width": 2, "dash": "dot"},
+                marker={"size": 5}))
         fig2.update_layout(yaxis_title="شاخص (پایه = ۱۰۰)")
-        _apply_chart_style(fig2, dark, height=360)
+        _apply_chart_style(fig2, dark, height=380)
         st.plotly_chart(fig2, use_container_width=True)
 
-        table = frame[["label", "left", "right", "ratio", "ratio_index"]].copy()
-        table.columns = ["تاریخ", left_label, right_label, "نسبت", "شاخص"]
+        # ---------- تحلیل شاخص دلار ----------
+        if has_usd:
+            last_ratio_change = frame["ratio_index"].iloc[-1] - 100
+            last_usd_change = frame["usd_index"].iloc[-1] - 100
+            st.caption(
+                f"📊 تغییر نسبت مصنوعی: **{last_ratio_change:+.2f}٪** | "
+                f"💵 تغییر شاخص دلار: **{last_usd_change:+.2f}٪**"
+            )
+            # اگر دلار زیاد حرکت کرده ولی نسبت تقریباً ثابت مانده ← حرکت هر دو ابزار ناشی از دلار بوده
+            if abs(last_usd_change) > 5 and abs(last_ratio_change) < 3:
+                direction = "رشد" if last_usd_change > 0 else "افت"
+                st.info(
+                    f"💡 نسبت تقریباً ثابت مانده در حالی که دلار {last_usd_change:+.1f}٪ {direction} کرده — "
+                    f"حرکت هر دو ابزار عمدتاً ناشی از دلار بوده، نه تغییر ارزش ذاتی نسبت به هم."
+                )
+            elif abs(last_ratio_change) > 10:
+                winner = left_label if last_ratio_change > 0 else right_label
+                loser = right_label if last_ratio_change > 0 else left_label
+                st.success(
+                    f"📈 نسبت {abs(last_ratio_change):.1f}٪ تغییر کرده — "
+                    f"**{winner}** نسبت به **{loser}** قوی‌تر عمل کرده."
+                )
+            elif abs(last_ratio_change) < 1 and abs(last_usd_change) < 1:
+                st.caption("⚪ هر دو شاخص در بازه مورد بررسی تقریباً ثابت مانده‌اند.")
+
+        # ---------- جدول ----------
+        table_cols = ["label", "left", "right", "ratio", "ratio_index"]
+        table_names = ["تاریخ", left_label, right_label, "نسبت", "شاخص نسبت"]
+        if has_usd:
+            table_cols.append("usd_index")
+            table_names.append("💵 شاخص دلار")
+        table = frame[table_cols].copy()
+        table.columns = table_names
         render_html_table(table.sort_values("تاریخ", ascending=False).head(15), dark=dark)
 
         with st.expander("🗑️ حذف این جفت"):
