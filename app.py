@@ -740,38 +740,53 @@ def compute_monthly_returns(data, year_jalali):
 
 def render_monthly_returns_page(data):
     st.header("📅 بازده ماهانه")
-    st.caption("محاسبه بازده بر مبنای تغییر ارزش ریالی هر واحد؛ "
-               "اگر سابقه‌ای پیش از ماه وجود نداشته باشد، بازده از اولین ثبت همان ماه "
-               "تا آخرین ثبت ماه محاسبه می‌شود.")
+    st.caption(
+        "بازده بر مبنای درصد تغییر ارزش هر واحد در هر ماه محاسبه می‌شود؛ "
+        "خط بنفش روی نمودار، درصد رشد یا افت کل سبد را در همان ماه نشان می‌دهد."
+    )
     _dark = get_settings(data)["dark_mode"]
+
+    # ---- سال‌های موجود ----
     all_dates = []
     for asset in data.get("assets", []):
         for record in asset.get("records", []):
-            if record.get("date_jalali"): all_dates.append(record["date_jalali"])
+            if record.get("date_jalali"):
+                all_dates.append(record["date_jalali"])
     for fund in data.get("gold_funds", []):
         for record in fund.get("records", []):
-            if record.get("date_jalali"): all_dates.append(record["date_jalali"])
+            if record.get("date_jalali"):
+                all_dates.append(record["date_jalali"])
     years = sorted(set(int(d[:4]) for d in all_dates if d[:4].isdigit()), reverse=True)
     if not years:
-        st.info("هنوز داده‌ای ثبت نشده."); return
-    month_names_full = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
-                        "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
-    c1, c2, c3 = st.columns(3)
+        st.info("هنوز داده‌ای ثبت نشده.")
+        return
+
+    month_names_full = [
+        "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+        "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
+    ]
+
+    c1, c2, c3, c4 = st.columns(4)
     selected_year = c1.selectbox("سال (شمسی)", years, key="mr_year")
     type_filter = c2.selectbox("نوع", ["همه", "دارایی‌ها", "صندوق‌های طلا"], key="mr_type")
     month_from = c3.selectbox("از ماه", month_names_full, index=0, key="mr_from")
-    month_to = st.selectbox("تا ماه", month_names_full, index=11, key="mr_to")
+    month_to = c4.selectbox("تا ماه", month_names_full, index=11, key="mr_to")
+
     from_idx = month_names_full.index(month_from) + 1
     to_idx = month_names_full.index(month_to) + 1
     if from_idx > to_idx:
-        st.warning("ماه شروع باید قبل از ماه پایان باشد."); return
+        st.warning("ماه شروع باید قبل از ماه پایان باشد.")
+        return
+
     results = compute_monthly_returns(data, selected_year)
     if type_filter == "دارایی‌ها":
         results = {k: v for k, v in results.items() if v["type"] == "asset"}
     elif type_filter == "صندوق‌های طلا":
         results = {k: v for k, v in results.items() if v["type"] == "gold"}
     if not results:
-        st.info("داده‌ای برای این انتخاب وجود ندارد."); return
+        st.info("داده‌ای برای این انتخاب وجود ندارد.")
+        return
+
     month_labels = month_names_full[from_idx - 1:to_idx]
     plot_data = {}
     for item_id, info in results.items():
@@ -779,59 +794,116 @@ def render_monthly_returns_page(data):
         if any(value is not None for value in monthly_values):
             plot_data[info["name"]] = monthly_values
     if not plot_data:
-        st.info("برای این بازه، بازده قابل محاسبه‌ای وجود ندارد."); return
-    mode = st.radio("نوع نمایش", ["📊 درصد بازده", "💰 سود / زیان به ریال"],
-                    horizontal=True, key="mr_mode")
+        st.info("برای این بازه، بازده قابل محاسبه‌ای وجود ندارد.")
+        return
+
+    # ---- محاسبه بازده ماهانه سبد (وزنی بر پایه ارزش ابتدای ماه) ----
+    # portfolio_return% = Σ profit_irr / Σ (start_price_irr × start_quantity) × 100
+    portfolio_values = []
+    for m_idx in range(len(month_labels)):
+        total_profit = 0.0
+        total_start_value = 0.0
+        for values in plot_data.values():
+            v = values[m_idx]
+            if v is None:
+                continue
+            total_profit += v["profit_irr"]
+            total_start_value += v["start_price_irr"] * v["start_quantity"]
+        if total_start_value > 0:
+            portfolio_values.append((total_profit / total_start_value) * 100)
+        else:
+            portfolio_values.append(None)
+
+    # ---- نمودار میله‌ای + خط بازده سبد ----
     fig = go.Figure()
     for name, values in plot_data.items():
-        if mode.startswith("📊"):
-            y_vals = [v["return_pct"] if v is not None else 0 for v in values]
-            text_vals = [f'{v["return_pct"]:+.2f}%' if v is not None else "—" for v in values]
-            y_title = "بازده ماهانه (%)"
-        else:
-            y_vals = [v["profit_irr"] if v is not None else 0 for v in values]
-            text_vals = [f'{v["profit_irr"]:+,.0f} ریال' if v is not None else "—" for v in values]
-            y_title = "سود / زیان ماهانه (ریال)"
-        fig.add_trace(go.Bar(name=name, x=month_labels, y=y_vals, text=text_vals,
-                             textposition="outside",
-                             hovertemplate="%{x}<br>%{fullData.name}<br>%{text}<extra></extra>"))
+        y_vals = [v["return_pct"] if v is not None else 0 for v in values]
+        text_vals = [f'{v["return_pct"]:+.2f}%' if v is not None else "—" for v in values]
+        fig.add_trace(go.Bar(
+            name=name,
+            x=month_labels,
+            y=y_vals,
+            text=text_vals,
+            textposition="outside",
+            hovertemplate="%{x}<br>%{fullData.name}<br>%{text}<extra></extra>",
+        ))
+
+    fig.add_trace(go.Scatter(
+        name="📈 بازده سبد",
+        x=month_labels,
+        y=portfolio_values,
+        mode="lines+markers",
+        line=dict(color="#8b5cf6", width=3),
+        marker=dict(size=13, color="#8b5cf6", symbol="diamond",
+                    line=dict(color="white", width=2)),
+        connectgaps=False,
+        hovertemplate="%{x}<br>📈 بازده سبد: %{y:+.2f}%<extra></extra>",
+    ))
+
     fig.update_layout(
-        barmode="group", title=f"بازده ماهانه سال {selected_year}",
-        xaxis_title="ماه", yaxis_title=y_title,
-        font=dict(family="Vazirmatn, Tahoma", size=12, color="#e6edf3" if _dark else "#1f2937"),
+        barmode="group",
+        title=f"بازده ماهانه سال {selected_year} — درصد رشد یا افت",
+        xaxis_title="ماه",
+        yaxis_title="بازده ماهانه (%)",
+        font=dict(family="Vazirmatn, Tahoma", size=12,
+                  color="#e6edf3" if _dark else "#1f2937"),
         paper_bgcolor="rgba(0,0,0,0)" if _dark else "white",
         plot_bgcolor="rgba(0,0,0,0)" if _dark else "white",
-        hovermode="x unified", height=500,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5))
+        hovermode="x unified",
+        height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25,
+                    xanchor="center", x=0.5),
+    )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ---- جدول ماهانه ----
     st.subheader("📋 جدول بازده ماهانه")
     df_table = pd.DataFrame({"ماه": month_labels})
     for name, values in plot_data.items():
-        if mode.startswith("📊"):
-            df_table[name] = [f'{v["return_pct"]:+.2f}%' if v is not None else "—" for v in values]
-        else:
-            df_table[name] = [f'{v["profit_irr"]:+,.0f} ریال' if v is not None else "—" for v in values]
+        df_table[name] = [
+            f'{v["return_pct"]:+.2f}%' if v is not None else "—" for v in values
+        ]
+    df_table["📈 بازده سبد"] = [
+        f'{v:+.2f}%' if v is not None else "—" for v in portfolio_values
+    ]
     render_html_table(df_table, dark=_dark)
+
+    # ---- خلاصه بازه ----
     st.subheader("📊 خلاصه بازده در بازه انتخابی")
     summary_rows = []
     for name, values in plot_data.items():
         valid = [v for v in values if v is not None]
-        if not valid: continue
+        if not valid:
+            continue
         cumulative = 1.0
-        for value in valid: cumulative *= 1 + value["return_pct"] / 100
-        total_profit_irr = sum(v["profit_irr"] for v in valid)
+        for value in valid:
+            cumulative *= 1 + value["return_pct"] / 100
         pct_values = [v["return_pct"] for v in valid]
         summary_rows.append({
             "نام": name,
-            "سود / زیان ریالی بازه": f"{total_profit_irr:+,.0f} ریال",
             "بازده کل بازه": f"{(cumulative - 1) * 100:+.2f}%",
             "میانگین ماهانه": f"{sum(pct_values) / len(pct_values):+.2f}%",
             "بهترین ماه": f"{max(pct_values):+.2f}%",
             "بدترین ماه": f"{min(pct_values):+.2f}%",
-            "تعداد ماه": len(valid)})
+            "تعداد ماه": len(valid),
+        })
+
+    valid_portfolio = [v for v in portfolio_values if v is not None]
+    if valid_portfolio:
+        cumulative = 1.0
+        for v in valid_portfolio:
+            cumulative *= 1 + v / 100
+        summary_rows.append({
+            "نام": "📈 بازده کل سبد",
+            "بازده کل بازه": f"{(cumulative - 1) * 100:+.2f}%",
+            "میانگین ماهانه": f"{sum(valid_portfolio) / len(valid_portfolio):+.2f}%",
+            "بهترین ماه": f"{max(valid_portfolio):+.2f}%",
+            "بدترین ماه": f"{min(valid_portfolio):+.2f}%",
+            "تعداد ماه": len(valid_portfolio),
+        })
+
     if summary_rows:
         render_html_table(pd.DataFrame(summary_rows), dark=_dark)
-
 
 # ================== 🔀 جفت ارز مصنوعی ==================
 def get_synthetic_instruments(data):
